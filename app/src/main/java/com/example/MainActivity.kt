@@ -57,7 +57,6 @@ fun FuncityResortApp(viewModel: ResortViewModel) {
     val filteredBookings by viewModel.filteredBookings.collectAsStateWithLifecycle()
     val metrics by viewModel.metrics.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
-    val syncMessage by viewModel.syncMessage.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val statusFilter by viewModel.selectedStatusFilter.collectAsStateWithLifecycle()
     val isFormOpen by viewModel.isBookingFormOpen.collectAsStateWithLifecycle()
@@ -160,10 +159,7 @@ fun FuncityResortApp(viewModel: ResortViewModel) {
                     }
                     AppNavTab.SETTINGS -> {
                         SettingsScreen(
-                            currencySymbol = currencySymbol,
-                            syncMessage = syncMessage,
                             isSyncing = isSyncing,
-                            onCurrencyChange = { viewModel.setCurrency(it) },
                             onSeedData = { viewModel.seedData() },
                             onRefresh = { viewModel.refresh() },
                             onSignOut = { viewModel.logout() }
