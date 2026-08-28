@@ -3,9 +3,15 @@ package com.example.ui.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.model.BlockedRoom
 import com.example.data.model.Booking
 import com.example.data.model.BookingStatus
+import com.example.data.model.CalendarDay
 import com.example.data.model.ResortMetrics
+import com.example.data.model.RoomCategory
+import com.example.data.model.RoomDataDefaults
+import com.example.data.model.RoomInfo
+import com.example.data.model.RoomSlotStatus
 import com.example.data.repository.BookingRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -14,19 +20,34 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 enum class AppNavTab(val title: String) {
     DASHBOARD("Dashboard"),
+    ROOM_CALENDAR("Room calendar"),
     BOOKINGS("Bookings"),
     ANALYTICS("Analytics"),
     SETTINGS("Settings")
 }
+
+data class SlotDetailModalData(
+    val room: RoomInfo,
+    val dateStr: String,
+    val isoDate: String,
+    val status: RoomSlotStatus,
+    val booking: Booking? = null,
+    val blockedRoom: BlockedRoom? = null
+)
 
 class ResortViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = BookingRepository.getInstance(application)
 
     val bookings: StateFlow<List<Booking>> = repository.bookings
+    val blockedRooms: StateFlow<List<BlockedRoom>> = repository.blockedRooms
     val metrics: StateFlow<ResortMetrics> = repository.metrics
     val isSyncing: StateFlow<Boolean> = repository.isSyncing
     val syncMessage: StateFlow<String?> = repository.syncMessage
@@ -37,6 +58,17 @@ class ResortViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _currentTab = MutableStateFlow(AppNavTab.DASHBOARD)
     val currentTab: StateFlow<AppNavTab> = _currentTab.asStateFlow()
+
+    // Room Calendar Date Range & Navigation
+    private val _calendarStartOffsetDays = MutableStateFlow(0)
+    val calendarStartOffsetDays: StateFlow<Int> = _calendarStartOffsetDays.asStateFlow()
+
+    private val _selectedRoomCategoryFilter = MutableStateFlow<String?>("All")
+    val selectedRoomCategoryFilter: StateFlow<String?> = _selectedRoomCategoryFilter.asStateFlow()
+
+    // Calendar slot detail modal (for inspecting or toggling)
+    private val _activeSlotDetail = MutableStateFlow<SlotDetailModalData?>(null)
+    val activeSlotDetail: StateFlow<SlotDetailModalData?> = _activeSlotDetail.asStateFlow()
 
     // Search & Filter in Bookings Tab
     private val _searchQuery = MutableStateFlow("")
@@ -96,6 +128,77 @@ class ResortViewModel(application: Application) : AndroidViewModel(application) 
         _currentTab.value = tab
     }
 
+    // Room Calendar Operations
+    fun nextCalendarDays(days: Int = 14) {
+        _calendarStartOffsetDays.value += days
+    }
+
+    fun prevCalendarDays(days: Int = 14) {
+        _calendarStartOffsetDays.value -= days
+    }
+
+    fun jumpCalendarToToday() {
+        _calendarStartOffsetDays.value = 0
+    }
+
+    fun setRoomCategoryFilter(category: String?) {
+        _selectedRoomCategoryFilter.value = category
+    }
+
+    fun toggleRoomBlock(roomId: String, isoDate: String, roomType: String) {
+        val cleanRoomId = roomId.replace("Room ", "").trim()
+        val isAlreadyBlocked = blockedRooms.value.any { b ->
+            val rId = b.roomId.replace("Room ", "").trim()
+            rId == cleanRoomId && b.date == isoDate
+        }
+
+        viewModelScope.launch {
+            if (isAlreadyBlocked) {
+                repository.unblockRoom(cleanRoomId, isoDate)
+                _toastMessage.value = "Room $cleanRoomId unblocked for $isoDate"
+            } else {
+                repository.blockRoom(cleanRoomId, isoDate, roomType)
+                _toastMessage.value = "Room $cleanRoomId blocked on $isoDate"
+            }
+        }
+    }
+
+    fun blockRoom(roomId: String, isoDate: String, roomType: String, reason: String = "Blocked by admin") {
+        viewModelScope.launch {
+            repository.blockRoom(roomId, isoDate, roomType, reason)
+            _toastMessage.value = "Room $roomId blocked on $isoDate"
+        }
+    }
+
+    fun unblockRoom(roomId: String, isoDate: String) {
+        viewModelScope.launch {
+            repository.unblockRoom(roomId, isoDate)
+            _toastMessage.value = "Room $roomId unblocked for $isoDate"
+        }
+    }
+
+    fun blockRoomForVisibleRange(roomId: String, dates: List<String>, roomType: String) {
+        viewModelScope.launch {
+            repository.batchBlockRoom(roomId, dates, roomType)
+            _toastMessage.value = "Blocked Room $roomId for ${dates.size} days"
+        }
+    }
+
+    fun unblockRoomForVisibleRange(roomId: String, dates: List<String>) {
+        viewModelScope.launch {
+            repository.batchUnblockRoom(roomId, dates)
+            _toastMessage.value = "Unblocked Room $roomId for ${dates.size} days"
+        }
+    }
+
+    fun openSlotDetail(slotDetail: SlotDetailModalData) {
+        _activeSlotDetail.value = slotDetail
+    }
+
+    fun closeSlotDetail() {
+        _activeSlotDetail.value = null
+    }
+
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
     }
@@ -153,7 +256,7 @@ class ResortViewModel(application: Application) : AndroidViewModel(application) 
     fun seedData() {
         viewModelScope.launch {
             repository.seedSampleDataToFirestore()
-            _toastMessage.value = "Sample data seeded to Firebase"
+            _toastMessage.value = "Sample data & blocks seeded to Firebase"
         }
     }
 
@@ -166,3 +269,4 @@ class ResortViewModel(application: Application) : AndroidViewModel(application) 
         _toastMessage.value = null
     }
 }
+

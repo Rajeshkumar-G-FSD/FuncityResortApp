@@ -24,6 +24,7 @@ import com.example.ui.screens.AnalyticsScreen
 import com.example.ui.screens.BookingsScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.LoginScreen
+import com.example.ui.screens.RoomCalendarScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.WarmBackground
@@ -52,6 +53,7 @@ fun FuncityResortApp(viewModel: ResortViewModel) {
     val isLoggedIn by viewModel.isLoggedIn.collectAsStateWithLifecycle()
     val currentTab by viewModel.currentTab.collectAsStateWithLifecycle()
     val bookings by viewModel.bookings.collectAsStateWithLifecycle()
+    val blockedRooms by viewModel.blockedRooms.collectAsStateWithLifecycle()
     val filteredBookings by viewModel.filteredBookings.collectAsStateWithLifecycle()
     val metrics by viewModel.metrics.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
@@ -62,6 +64,7 @@ fun FuncityResortApp(viewModel: ResortViewModel) {
     val editingBooking by viewModel.editingBooking.collectAsStateWithLifecycle()
     val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
     val currencySymbol by viewModel.currencySymbol.collectAsStateWithLifecycle()
+    val calendarStartOffsetDays by viewModel.calendarStartOffsetDays.collectAsStateWithLifecycle()
 
     LaunchedEffect(toastMessage) {
         toastMessage?.let {
@@ -109,7 +112,29 @@ fun FuncityResortApp(viewModel: ResortViewModel) {
                             onEditBooking = { booking -> viewModel.openEditBookingForm(booking) },
                             onDeleteBooking = { id -> viewModel.deleteBooking(id) },
                             onNewBooking = { viewModel.openNewBookingForm() },
-                            onViewAllBookings = { viewModel.selectTab(AppNavTab.BOOKINGS) }
+                            onViewAllBookings = { viewModel.selectTab(AppNavTab.BOOKINGS) },
+                            onSwitchToCalendar = { viewModel.selectTab(AppNavTab.ROOM_CALENDAR) }
+                        )
+                    }
+                    AppNavTab.ROOM_CALENDAR -> {
+                        RoomCalendarScreen(
+                            blockedRooms = blockedRooms,
+                            bookings = bookings,
+                            startOffsetDays = calendarStartOffsetDays,
+                            currencySymbol = currencySymbol,
+                            onToggleBlock = { roomId, isoDate, roomType ->
+                                viewModel.toggleRoomBlock(roomId, isoDate, roomType)
+                            },
+                            onBatchBlockRoom = { roomId, dates, roomType ->
+                                viewModel.blockRoomForVisibleRange(roomId, dates, roomType)
+                            },
+                            onBatchUnblockRoom = { roomId, dates ->
+                                viewModel.unblockRoomForVisibleRange(roomId, dates)
+                            },
+                            onNextDays = { viewModel.nextCalendarDays(14) },
+                            onPrevDays = { viewModel.prevCalendarDays(14) },
+                            onJumpToToday = { viewModel.jumpCalendarToToday() },
+                            onSwitchToDashboard = { viewModel.selectTab(AppNavTab.DASHBOARD) }
                         )
                     }
                     AppNavTab.BOOKINGS -> {

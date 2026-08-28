@@ -16,7 +16,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.ConfirmationNumber
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.EventNote
+import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -60,31 +63,42 @@ fun FuncityBottomNav(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
+                .padding(horizontal = 4.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
             NavItem(
                 tab = AppNavTab.DASHBOARD,
                 icon = Icons.Default.Dashboard,
+                label = "Dashboard",
                 isSelected = currentTab == AppNavTab.DASHBOARD,
                 onClick = { onTabSelected(AppNavTab.DASHBOARD) }
             )
             NavItem(
-                tab = AppNavTab.BOOKINGS,
+                tab = AppNavTab.ROOM_CALENDAR,
                 icon = Icons.Default.CalendarMonth,
+                label = "Calendar",
+                isSelected = currentTab == AppNavTab.ROOM_CALENDAR,
+                onClick = { onTabSelected(AppNavTab.ROOM_CALENDAR) }
+            )
+            NavItem(
+                tab = AppNavTab.BOOKINGS,
+                icon = Icons.Default.FormatListBulleted,
+                label = "Bookings",
                 isSelected = currentTab == AppNavTab.BOOKINGS,
                 onClick = { onTabSelected(AppNavTab.BOOKINGS) }
             )
             NavItem(
                 tab = AppNavTab.ANALYTICS,
                 icon = Icons.Default.Analytics,
+                label = "Analytics",
                 isSelected = currentTab == AppNavTab.ANALYTICS,
                 onClick = { onTabSelected(AppNavTab.ANALYTICS) }
             )
             NavItem(
                 tab = AppNavTab.SETTINGS,
                 icon = Icons.Default.Settings,
+                label = "Settings",
                 isSelected = currentTab == AppNavTab.SETTINGS,
                 onClick = { onTabSelected(AppNavTab.SETTINGS) }
             )
@@ -96,6 +110,7 @@ fun FuncityBottomNav(
 private fun NavItem(
     tab: AppNavTab,
     icon: ImageVector,
+    label: String,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
@@ -113,7 +128,7 @@ private fun NavItem(
             .clip(RoundedCornerShape(50))
             .background(bgColor)
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
             .testTag("nav_tab_${tab.name.lowercase()}"),
         contentAlignment = Alignment.Center
     ) {
@@ -123,17 +138,18 @@ private fun NavItem(
         ) {
             Icon(
                 imageVector = icon,
-                contentDescription = tab.title,
+                contentDescription = label,
                 tint = contentColor,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(20.dp)
             )
             Text(
-                text = tab.title,
+                text = label,
                 color = contentColor,
-                fontSize = 10.sp,
+                fontSize = 9.sp,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                 letterSpacing = 0.05.sp
             )
         }
     }
 }
+

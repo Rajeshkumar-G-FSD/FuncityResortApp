@@ -3,10 +3,12 @@ package com.example.data.repository
 import android.content.Context
 import android.util.Log
 import com.example.data.firebase.FirebaseManager
+import com.example.data.model.BlockedRoom
 import com.example.data.model.Booking
 import com.example.data.model.BookingStatus
 import com.example.data.model.DailyRevenuePoint
 import com.example.data.model.ResortMetrics
+import com.example.data.model.RoomDataDefaults
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
@@ -17,14 +19,22 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 class BookingRepository private constructor(context: Context) {
 
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
-    private var firestoreListener: ListenerRegistration? = null
+    private var bookingsListener: ListenerRegistration? = null
+    private var blockedRoomsListener: ListenerRegistration? = null
 
     private val _bookings = MutableStateFlow<List<Booking>>(getInitialSampleBookings())
     val bookings: StateFlow<List<Booking>> = _bookings.asStateFlow()
+
+    private val _blockedRooms = MutableStateFlow<List<BlockedRoom>>(RoomDataDefaults.getInitialBlockedRooms())
+    val blockedRooms: StateFlow<List<BlockedRoom>> = _blockedRooms.asStateFlow()
 
     private val _metrics = MutableStateFlow(computeMetrics(getInitialSampleBookings()))
     val metrics: StateFlow<ResortMetrics> = _metrics.asStateFlow()
@@ -49,13 +59,14 @@ class BookingRepository private constructor(context: Context) {
 
         try {
             _isSyncing.value = true
-            firestoreListener?.remove()
-            firestoreListener = firestore.collection("bookings")
+            
+            // 1. Sync Bookings
+            bookingsListener?.remove()
+            bookingsListener = firestore.collection("bookings")
                 .addSnapshotListener { snapshots, e ->
-                    _isSyncing.value = false
                     if (e != null) {
-                        Log.w("BookingRepo", "Firestore listen failed: ${e.message}")
-                        _syncMessage.value = "Local cached (Firestore sync error: ${e.localizedMessage})"
+                        Log.w("BookingRepo", "Firestore bookings listen failed: ${e.message}")
+                        _syncMessage.value = "Local cached (Firestore sync: ${e.localizedMessage})"
                         return@addSnapshotListener
                     }
 
@@ -68,27 +79,205 @@ class BookingRepository private constructor(context: Context) {
                             _metrics.value = computeMetrics(fetched)
                             _syncMessage.value = "Synced with Firebase (${fetched.size} bookings)"
                         }
-                    } else {
-                        // Empty collection in Firestore, offer to seed or keep local
-                        _syncMessage.value = "Firebase connected (Collection empty, local active)"
                     }
                 }
+
+            // 2. Sync Blocked Rooms (try collection 'blocked_rooms' and 'blockedRooms')
+            blockedRoomsListener?.remove()
+            blockedRoomsListener = firestore.collection("blocked_rooms")
+                .addSnapshotListener { snapshots, e ->
+                    _isSyncing.value = false
+                    if (e != null) {
+                        Log.w("BookingRepo", "Firestore blocked_rooms listen failed: ${e.message}")
+                        return@addSnapshotListener
+                    }
+
+                    if (snapshots != null && !snapshots.isEmpty) {
+                        val fetchedBlocks = snapshots.documents.mapNotNull { doc ->
+                            doc.data?.let { BlockedRoom.fromMap(it, doc.id) }
+                        }
+                        if (fetchedBlocks.isNotEmpty()) {
+                            _blockedRooms.value = fetchedBlocks
+                            Log.d("BookingRepo", "Synced ${fetchedBlocks.size} blocked rooms from Firebase")
+                        }
+                    }
+                }
+
+            // Also check alternate collection name 'blockedRooms' for full web compatibility
+            firestore.collection("blockedRooms")
+                .get()
+                .addOnSuccessListener { altSnapshots ->
+                    if (altSnapshots != null && !altSnapshots.isEmpty) {
+                        val altBlocks = altSnapshots.documents.mapNotNull { doc ->
+                            doc.data?.let { BlockedRoom.fromMap(it, doc.id) }
+                        }
+                        if (altBlocks.isNotEmpty()) {
+                            val combined = (_blockedRooms.value + altBlocks).distinctBy { it.id }
+                            _blockedRooms.value = combined
+                        }
+                    }
+                }
+
         } catch (e: Exception) {
             _isSyncing.value = false
             Log.e("BookingRepo", "Failed to setup snapshot listener", e)
         }
     }
 
+    suspend fun blockRoom(
+        roomId: String,
+        date: String,
+        roomType: String = "Couple Room",
+        reason: String = "Blocked by admin"
+    ): Result<BlockedRoom> = withContext(Dispatchers.IO) {
+        val cleanRoomId = roomId.replace("Room ", "").trim()
+        val docId = "${cleanRoomId}_$date"
+        val block = BlockedRoom(
+            id = docId,
+            roomId = cleanRoomId,
+            roomNumber = cleanRoomId,
+            roomType = roomType,
+            date = date,
+            reason = reason,
+            blockedBy = "admin",
+            createdAt = System.currentTimeMillis()
+        )
+
+        try {
+            _isSyncing.value = true
+            // Instant local update
+            val currentList = _blockedRooms.value.filter { it.id != docId }.toMutableList()
+            currentList.add(block)
+            _blockedRooms.value = currentList
+
+            // Sync to Firestore (both blocked_rooms and blockedRooms collections for web compatibility)
+            val firestore = FirebaseManager.getFirestore()
+            firestore?.let { db ->
+                db.collection("blocked_rooms").document(docId).set(block.toMap(), SetOptions.merge()).await()
+                db.collection("blockedRooms").document(docId).set(block.toMap(), SetOptions.merge())
+            }
+
+            _isSyncing.value = false
+            _syncMessage.value = "Room $cleanRoomId blocked on $date"
+            Result.success(block)
+        } catch (e: Exception) {
+            _isSyncing.value = false
+            Log.e("BookingRepo", "Error blocking room in Firebase", e)
+            _syncMessage.value = "Room blocked locally"
+            Result.success(block)
+        }
+    }
+
+    suspend fun unblockRoom(roomId: String, date: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val cleanRoomId = roomId.replace("Room ", "").trim()
+        val docId = "${cleanRoomId}_$date"
+
+        try {
+            _isSyncing.value = true
+            // Instant local update
+            val currentList = _blockedRooms.value.filter { 
+                val blockClean = it.roomId.replace("Room ", "").trim()
+                !(blockClean == cleanRoomId && it.date == date)
+            }
+            _blockedRooms.value = currentList
+
+            // Delete from Firestore
+            val firestore = FirebaseManager.getFirestore()
+            firestore?.let { db ->
+                db.collection("blocked_rooms").document(docId).delete().await()
+                db.collection("blockedRooms").document(docId).delete()
+            }
+
+            _isSyncing.value = false
+            _syncMessage.value = "Room $cleanRoomId unblocked for $date"
+            Result.success(Unit)
+        } catch (e: Exception) {
+            _isSyncing.value = false
+            Log.e("BookingRepo", "Error unblocking room in Firebase", e)
+            _syncMessage.value = "Room unblocked locally"
+            Result.success(Unit)
+        }
+    }
+
+    suspend fun batchBlockRoom(
+        roomId: String,
+        dates: List<String>,
+        roomType: String = "Couple Room"
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val cleanRoomId = roomId.replace("Room ", "").trim()
+        try {
+            _isSyncing.value = true
+            val currentList = _blockedRooms.value.toMutableList()
+            val firestore = FirebaseManager.getFirestore()
+
+            for (date in dates) {
+                val docId = "${cleanRoomId}_$date"
+                val block = BlockedRoom(
+                    id = docId,
+                    roomId = cleanRoomId,
+                    roomNumber = cleanRoomId,
+                    roomType = roomType,
+                    date = date,
+                    reason = "Bulk blocked by admin"
+                )
+                currentList.removeAll { it.id == docId }
+                currentList.add(block)
+
+                firestore?.let { db ->
+                    db.collection("blocked_rooms").document(docId).set(block.toMap(), SetOptions.merge())
+                    db.collection("blockedRooms").document(docId).set(block.toMap(), SetOptions.merge())
+                }
+            }
+
+            _blockedRooms.value = currentList
+            _isSyncing.value = false
+            _syncMessage.value = "Room $cleanRoomId blocked for ${dates.size} dates"
+            Result.success(Unit)
+        } catch (e: Exception) {
+            _isSyncing.value = false
+            Log.e("BookingRepo", "Error batch blocking rooms", e)
+            Result.success(Unit)
+        }
+    }
+
+    suspend fun batchUnblockRoom(roomId: String, dates: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
+        val cleanRoomId = roomId.replace("Room ", "").trim()
+        try {
+            _isSyncing.value = true
+            val datesSet = dates.toSet()
+            val currentList = _blockedRooms.value.filterNot { 
+                val rId = it.roomId.replace("Room ", "").trim()
+                rId == cleanRoomId && datesSet.contains(it.date)
+            }
+            _blockedRooms.value = currentList
+
+            val firestore = FirebaseManager.getFirestore()
+            for (date in dates) {
+                val docId = "${cleanRoomId}_$date"
+                firestore?.let { db ->
+                    db.collection("blocked_rooms").document(docId).delete()
+                    db.collection("blockedRooms").document(docId).delete()
+                }
+            }
+
+            _isSyncing.value = false
+            _syncMessage.value = "Room $cleanRoomId unblocked for ${dates.size} dates"
+            Result.success(Unit)
+        } catch (e: Exception) {
+            _isSyncing.value = false
+            Log.e("BookingRepo", "Error batch unblocking rooms", e)
+            Result.success(Unit)
+        }
+    }
+
     suspend fun createBooking(booking: Booking): Result<Booking> = withContext(Dispatchers.IO) {
         try {
             _isSyncing.value = true
-            // Update local first for instant UI response
             val currentList = _bookings.value.toMutableList()
             currentList.add(0, booking)
             _bookings.value = currentList
             _metrics.value = computeMetrics(currentList)
 
-            // Save to Firebase
             val firestore = FirebaseManager.getFirestore()
             firestore?.collection("bookings")
                 ?.document(booking.id)
@@ -102,7 +291,7 @@ class BookingRepository private constructor(context: Context) {
             _isSyncing.value = false
             Log.e("BookingRepo", "Error creating booking", e)
             _syncMessage.value = "Saved locally (Cloud sync: ${e.message})"
-            Result.success(booking) // Still success locally
+            Result.success(booking)
         }
     }
 
@@ -182,17 +371,23 @@ class BookingRepository private constructor(context: Context) {
     suspend fun seedSampleDataToFirestore(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             _isSyncing.value = true
-            val sampleData = getInitialSampleBookings()
+            val sampleBookings = getInitialSampleBookings()
+            val sampleBlocks = RoomDataDefaults.getInitialBlockedRooms()
             val firestore = FirebaseManager.getFirestore()
 
             if (firestore != null) {
-                for (booking in sampleData) {
+                for (booking in sampleBookings) {
                     firestore.collection("bookings").document(booking.id).set(booking.toMap()).await()
                 }
-                _syncMessage.value = "Seeded ${sampleData.size} bookings to Firebase"
+                for (block in sampleBlocks) {
+                    firestore.collection("blocked_rooms").document(block.id).set(block.toMap()).await()
+                    firestore.collection("blockedRooms").document(block.id).set(block.toMap()).await()
+                }
+                _syncMessage.value = "Seeded ${sampleBookings.size} bookings & ${sampleBlocks.size} blocks"
             }
-            _bookings.value = sampleData
-            _metrics.value = computeMetrics(sampleData)
+            _bookings.value = sampleBookings
+            _blockedRooms.value = sampleBlocks
+            _metrics.value = computeMetrics(sampleBookings)
             _isSyncing.value = false
             Result.success(Unit)
         } catch (e: Exception) {
@@ -216,13 +411,13 @@ class BookingRepository private constructor(context: Context) {
         val pendingAmt = pending.sumOf { it.totalAmount - it.advanceCollected }.coerceAtLeast(0.0)
 
         val history = listOf(
-            DailyRevenuePoint("15 Oct", 1200.0),
-            DailyRevenuePoint("17 Oct", 1800.0),
-            DailyRevenuePoint("19 Oct", 1400.0),
-            DailyRevenuePoint("21 Oct", 2900.0),
-            DailyRevenuePoint("23 Oct", 2300.0),
-            DailyRevenuePoint("25 Oct", 3800.0),
-            DailyRevenuePoint("28 Oct", confirmedRev)
+            DailyRevenuePoint("16/8", 1200.0),
+            DailyRevenuePoint("18/8", 1800.0),
+            DailyRevenuePoint("20/8", 1400.0),
+            DailyRevenuePoint("22/8", 2200.0),
+            DailyRevenuePoint("24/8", 2800.0),
+            DailyRevenuePoint("26/8", 3400.0),
+            DailyRevenuePoint("28/8", confirmedRev)
         )
 
         return ResortMetrics(
@@ -233,7 +428,7 @@ class BookingRepository private constructor(context: Context) {
             cancelledToday = cancelled.size,
             confirmedCount = confirmed.size,
             totalBookings = bookingList.size,
-            occupancyRate = if (bookingList.isNotEmpty()) ((confirmed.size.toFloat() / 12f) * 100).toInt().coerceIn(40, 96) else 78,
+            occupancyRate = if (bookingList.isNotEmpty()) ((confirmed.size.toFloat() / 10f) * 100).toInt().coerceIn(20, 95) else 75,
             revenueHistory = history
         )
     }
@@ -257,64 +452,33 @@ class BookingRepository private constructor(context: Context) {
                     roomNumber = "Room 111",
                     totalAmount = 4480.0,
                     advanceCollected = 967.0,
-                    checkIn = "24 Oct, 2:00 PM",
-                    checkOut = "26 Oct, 11:00 AM",
-                    contactNumber = "+91 98765 43210",
+                    checkIn = "Aug 29, 2026",
+                    checkOut = "Aug 31, 2026",
+                    contactNumber = "8072117912",
                     status = BookingStatus.CONFIRMED,
-                    guestEmail = "rajesh.g@gmail.com",
+                    guestEmail = "rktechappcode@gmail.com",
                     adults = 2,
                     children = 0,
-                    notes = "Early check-in requested. Honeymoon package."
+                    notes = "test"
                 ),
                 Booking(
-                    id = "FC-501516",
-                    guestName = "Priya & Sanjay Verma",
-                    roomType = "Nilgiri Mountain Villa",
-                    roomNumber = "Villa 204",
-                    totalAmount = 6500.0,
-                    advanceCollected = 2000.0,
-                    checkIn = "25 Oct, 1:00 PM",
-                    checkOut = "28 Oct, 11:00 AM",
-                    contactNumber = "+91 98450 11223",
-                    status = BookingStatus.CONFIRMED,
-                    guestEmail = "sanjay.verma@outlook.com",
-                    adults = 2,
-                    children = 1,
-                    notes = "Tea garden view preferred."
-                ),
-                Booking(
-                    id = "FC-501517",
-                    guestName = "Dr. Vikramaditya Roy",
-                    roomType = "Heritage Suite",
-                    roomNumber = "Room 302",
-                    totalAmount = 5200.0,
-                    advanceCollected = 0.0,
-                    checkIn = "26 Oct, 3:00 PM",
-                    checkOut = "28 Oct, 12:00 PM",
-                    contactNumber = "+91 91234 56780",
-                    status = BookingStatus.PENDING,
-                    guestEmail = "v.roy@aims.org",
-                    adults = 2,
-                    children = 0,
-                    notes = "Awaiting bank transfer confirmation."
-                ),
-                Booking(
-                    id = "FC-501518",
-                    guestName = "Karthik Subramanian",
-                    roomType = "Pine Cottage",
-                    roomNumber = "Cottage 108",
-                    totalAmount = 3800.0,
-                    advanceCollected = 500.0,
-                    checkIn = "24 Oct, 12:00 PM",
-                    checkOut = "25 Oct, 11:00 AM",
-                    contactNumber = "+91 97890 34567",
+                    id = "FC-818051",
+                    guestName = "testuser",
+                    roomType = "Couple Room",
+                    roomNumber = "Room 110",
+                    totalAmount = 6160.0,
+                    advanceCollected = 2464.0,
+                    checkIn = "Aug 29, 2026",
+                    checkOut = "Sep 1, 2026",
+                    contactNumber = "8072117913",
                     status = BookingStatus.CANCELLED,
-                    guestEmail = "karthik.s@techcorp.in",
-                    adults = 1,
+                    guestEmail = "rktechappcode@gmail.com",
+                    adults = 2,
                     children = 0,
-                    notes = "Cancelled due to travel schedule change."
+                    notes = "test users"
                 )
             )
         }
     }
 }
+
