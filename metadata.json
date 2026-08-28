@@ -1,0 +1,7 @@
+{
+  "name": "Funcity Resorts",
+  "description": "Property management dashboard for Funcity Resorts, Ooty with live KPI tracking, bookings CRUD synced with Firebase, and revenue analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
